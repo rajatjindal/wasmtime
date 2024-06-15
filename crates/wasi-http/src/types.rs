@@ -11,6 +11,7 @@ use crate::{
 use http_body_util::BodyExt;
 use hyper::header::HeaderName;
 use std::any::Any;
+use std::io::Cursor;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -148,6 +149,15 @@ pub(crate) fn remove_forbidden_headers(
     }
 }
 
+#[derive(Clone)]
+/// Configuration for client cert auth.
+pub struct ClientCertAuth {
+    /// The auth cert chain to use for client-auth
+    pub cert_chain: String,
+    /// The private key to use for client-auth
+    pub private_key: String,
+}
+
 /// Configuration for an outgoing request.
 pub struct OutgoingRequestConfig {
     /// Whether to use TLS for the request.
@@ -158,6 +168,10 @@ pub struct OutgoingRequestConfig {
     pub first_byte_timeout: Duration,
     /// The timeout between chunks of a streaming body
     pub between_bytes_timeout: Duration,
+    /// The custom root ca to add to root ca store
+    pub custom_root_ca: Option<String>,
+    /// The client auth
+    pub client_cert_auth: Option<ClientCertAuth>,
 }
 
 /// The default implementation of how an outgoing request is sent.
@@ -168,6 +182,7 @@ pub fn default_send_request(
     request: hyper::Request<HyperOutgoingBody>,
     config: OutgoingRequestConfig,
 ) -> HostFutureIncomingResponse {
+    println!("inside default_send_request");
     let handle = wasmtime_wasi::runtime::spawn(async move {
         Ok(default_send_request_handler(request, config).await)
     });
@@ -185,6 +200,8 @@ pub async fn default_send_request_handler(
         connect_timeout,
         first_byte_timeout,
         between_bytes_timeout,
+        custom_root_ca,
+        client_cert_auth,
     }: OutgoingRequestConfig,
 ) -> Result<IncomingResponse, types::ErrorCode> {
     let authority = if let Some(authority) = request.uri().authority() {
@@ -226,19 +243,57 @@ pub async fn default_send_request_handler(
 
         #[cfg(not(any(target_arch = "riscv64", target_arch = "s390x")))]
         {
-            use rustls::pki_types::{ServerName, TrustAnchor};
+            use rustls::pki_types::ServerName;
 
-            // derived from https://github.com/tokio-rs/tls/blob/master/tokio-rustls/examples/client/src/main.rs
-            let mut root_cert_store = rustls::RootCertStore::empty();
-            root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| TrustAnchor {
-                name_constraints: ta.name_constraints.to_owned(),
-                subject: ta.subject.to_owned(),
-                subject_public_key_info: ta.subject_public_key_info.to_owned(),
-            }));
-            let config = rustls::ClientConfig::builder()
-                .with_root_certificates(root_cert_store)
-                .with_no_client_auth();
+            // derived from https://github.com/rustls/rustls/blob/main/examples/src/bin/simpleclient.rs
+            let mut root_cert_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+            };
+
+            let mut root_cert_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+            };
+
+            if let Some(custom_root_ca_val) = custom_root_ca {
+                let mut custom_root_ca_cursor = Cursor::new(custom_root_ca_val);
+                let (added, ignored) = root_cert_store.add_parsable_certificates(
+                    rustls_pemfile::certs(&mut custom_root_ca_cursor)
+                        .last()
+                        .unwrap(),
+                );
+                tracing::trace!(
+                    "adding custom root ca, added: {}, ignored: {}",
+                    added,
+                    ignored
+                );
+            }
+
+            let config_builder =
+                rustls::ClientConfig::builder().with_root_certificates(root_cert_store);
+
+            let config = match client_cert_auth {
+                Some(val) => {
+                    tracing::trace!("configuring client cert auth");
+                    let mut cert_chain = Cursor::new(val.cert_chain.as_str());
+                    let cert_chain_der = rustls_pemfile::certs(&mut cert_chain)
+                        .into_iter()
+                        .map(|x| x.unwrap())
+                        .collect();
+
+                    let mut private_key = Cursor::new(val.private_key.as_str());
+
+                    let private_key_der = rustls_pemfile::private_key(&mut private_key)
+                        .unwrap()
+                        .unwrap();
+                    config_builder
+                        .with_client_auth_cert(cert_chain_der, private_key_der)
+                        .unwrap()
+                }
+                None => config_builder.with_no_client_auth(),
+            };
+
             let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+
             let mut parts = authority.split(":");
             let host = parts.next().unwrap_or(&authority);
             let domain = ServerName::try_from(host)
@@ -308,12 +363,14 @@ pub async fn default_send_request_handler(
         .build()
         .expect("comes from valid request");
 
+    println!("rj 14");
     let resp = timeout(first_byte_timeout, sender.send_request(request))
         .await
         .map_err(|_| types::ErrorCode::ConnectionReadTimeout)?
         .map_err(hyper_request_error)?
         .map(|body| body.map_err(hyper_request_error).boxed());
 
+    println!("rj 15");
     Ok(IncomingResponse {
         resp,
         worker: Some(worker),
@@ -450,6 +507,10 @@ pub struct HostRequestOptions {
     pub first_byte_timeout: Option<std::time::Duration>,
     /// How long to wait between frames of the response body.
     pub between_bytes_timeout: Option<std::time::Duration>,
+    /// The custom root ca
+    pub custom_root_ca: Option<String>,
+    /// The cert to use for client auth
+    pub client_cert_auth: Option<ClientCertAuth>,
 }
 
 /// The concrete type behind a `wasi:http/types/incoming-response` resource.
