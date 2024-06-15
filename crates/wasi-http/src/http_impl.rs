@@ -38,6 +38,9 @@ where
             .and_then(|opts| opts.between_bytes_timeout)
             .unwrap_or(std::time::Duration::from_secs(600));
 
+        let custom_root_ca = opts.and_then(|opts| opts.custom_root_ca.clone());
+        let client_cert_auth = opts.and_then(|opts| opts.client_cert_auth.clone());
+
         let req = self.table().delete(request_id)?;
         let mut builder = hyper::Request::builder();
 
@@ -100,6 +103,8 @@ where
                 connect_timeout,
                 first_byte_timeout,
                 between_bytes_timeout,
+                custom_root_ca,
+                client_cert_auth,
             },
         )?;
 
