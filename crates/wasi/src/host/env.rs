@@ -11,8 +11,16 @@ where
     fn get_arguments(&mut self) -> anyhow::Result<Vec<String>> {
         Ok(self.ctx().args.clone())
     }
+    fn hello(&mut self) -> anyhow::Result<Result<String, crate::bindings::cli::environment::Error>> {
+        Ok(Ok("hello from wasmtime".to_string()))
+    }
+    
+    fn justhello(&mut self) -> anyhow::Result<String> {
+        Ok("justhello from wasmtime".to_string())
+    }
+
     fn initial_cwd(&mut self) -> anyhow::Result<Option<String>> {
         // FIXME: expose cwd in builder and save in ctx
-        Ok(None)
+        Ok(Some("whatever".to_string()))
     }
 }

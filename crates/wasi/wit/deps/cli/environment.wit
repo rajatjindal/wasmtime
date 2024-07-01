@@ -12,6 +12,20 @@ interface environment {
   /// Get the POSIX-style arguments to the program.
   get-arguments: func() -> list<string>;
 
+  justhello: func() -> string;
+  hello: func() -> result<string, error>;
+
+  variant error {
+    /// The provided variable name is invalid.
+    invalid-name(string),
+    /// The provided variable is undefined.
+    undefined(string),
+    /// A variables provider specific error has occurred.
+    provider(string),
+    /// Some implementation-specific error has occurred.
+    other(string),
+  }
+
   /// Return a path that programs should use as their initial current working
   /// directory, interpreting `.` as shorthand for this.
   initial-cwd: func() -> option<string>;
